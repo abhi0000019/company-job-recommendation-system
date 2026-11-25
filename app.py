@@ -506,6 +506,22 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
     }
 }
 
+
+/* Authentication tabs: keep every tab label readable on the light card */
+.stTabs [data-baseweb="tab"],
+.stTabs [data-baseweb="tab"] *,
+.stTabs button[role="tab"],
+.stTabs button[role="tab"] * {
+    color: #334155 !important;
+    opacity: 1 !important;
+}
+.stTabs [data-baseweb="tab"][aria-selected="true"],
+.stTabs [data-baseweb="tab"][aria-selected="true"] *,
+.stTabs button[role="tab"][aria-selected="true"],
+.stTabs button[role="tab"][aria-selected="true"] * {
+    color: #5145cd !important;
+}
+
 </style>
 
 """, unsafe_allow_html=True)
