@@ -461,7 +461,7 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
 """, unsafe_allow_html=True)
 
 user = current_user()
-if not user:
+if not user and not st.session_state.get("is_admin", False):
     st.markdown("""
     <div class="cm-header">
       <div class="cm-brand">Career<span>Match</span> 🎯</div>
