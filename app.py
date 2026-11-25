@@ -5,6 +5,10 @@ import secrets
 import re
 from datetime import datetime
 from pathlib import Path
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
 
 DB_PATH = Path(__file__).parent / "database.db"
 
@@ -171,6 +175,52 @@ def extract_resume_text(uploaded_file):
     except Exception as exc:
         st.error(f"Could not read this file: {exc}")
     return ""
+
+# -------------------- LIVE JOBS API --------------------
+@st.cache_data(ttl=300, show_spinner=False)
+def search_jobsforce(q, city, state, job_type, work_mode, fresher, posted_within_days):
+    """Fetch current public listings from JobsForce India; no API key is required."""
+    params = {"per_page": 20, "page": 1}
+    if q:
+        params["q"] = q[:200]
+    if city:
+        params["city"] = city[:80]
+    if state:
+        params["state"] = state[:80]
+    if job_type:
+        params["job_type"] = job_type
+    if work_mode:
+        params["work_mode"] = work_mode
+    if fresher:
+        params["fresher"] = "true"
+    if posted_within_days:
+        params["posted_within_days"] = int(posted_within_days)
+
+    url = "https://jobsforceindia.com/api/public/v1/jobs?" + urllib.parse.urlencode(params)
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json", "User-Agent": "CareerMatch/1.0"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            return {"error": "The jobs provider returned an unexpected response."}
+        return payload
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            return {"error": "The jobs provider is receiving too many requests. Please wait a minute and try again."}
+        try:
+            detail = json.loads(exc.read().decode("utf-8"))
+            message = detail.get("error", {}).get("message", "")
+        except Exception:
+            message = ""
+        return {"error": message or f"Jobs provider returned HTTP {exc.code}."}
+    except urllib.error.URLError:
+        return {"error": "Could not connect to JobsForce India. Check your internet connection and try again."}
+    except Exception:
+        return {"error": "Live job search is temporarily unavailable. Please try again later."}
+
 
 # -------------------- UI --------------------
 st.markdown("""
@@ -614,7 +664,7 @@ if st.session_state.get("is_admin", False):
 with st.sidebar:
     st.title("🎯 CareerMatch")
     st.write(f"Welcome, **{user['name']}**")
-    page = st.radio("Navigation", ["Dashboard", "My Profile", "Job Recommendations", "Company Recommendations", "Company Explorer", "Skill Gap & Roadmap", "Resume Analyzer", "Saved Jobs", "Application Tracker", "Compare Companies"])
+    page = st.radio("Navigation", ["Dashboard", "My Profile", "Job Recommendations", "Live Jobs", "Company Recommendations", "Company Explorer", "Skill Gap & Roadmap", "Resume Analyzer", "Saved Jobs", "Application Tracker", "Compare Companies"])
     if st.button("Logout", use_container_width=True):
         st.session_state.pop("user_id", None)
         st.session_state.pop("is_admin", None)
@@ -776,6 +826,111 @@ elif page == "Job Recommendations":
                         con.execute("INSERT INTO applications(user_id,job_id,status,applied_on) VALUES(?,?,?,?)",
                                     (user["id"],job["id"],"Interested",datetime.now().strftime("%Y-%m-%d")))
                     st.success("Added to tracker")
+
+elif page == "Live Jobs":
+    st.title("Live Job Search")
+    st.write("Search current public vacancies from JobsForce India. These listings are fetched from the provider when you search; they are separate from CareerMatch's sample jobs.")
+
+    with st.form("jobsforce_search_form"):
+        default_query = (user["interests"] or user["skills"] or "")[:200]
+        query = st.text_input("Job title or skills", value=st.session_state.get("live_jobs_q", default_query),
+                              placeholder="e.g. Python Developer, Data Analyst, SQL")
+        filter_a, filter_b, filter_c = st.columns(3)
+        with filter_a:
+            city = st.text_input("City", value=st.session_state.get("live_jobs_city", ""), placeholder="e.g. Lucknow")
+        with filter_b:
+            state = st.text_input("State", value=st.session_state.get("live_jobs_state", ""), placeholder="e.g. Uttar Pradesh")
+        with filter_c:
+            job_type_choice = st.selectbox("Job type", ["Any", "full-time", "part-time", "internship", "contract", "temporary"],
+                                            index=["Any", "full-time", "part-time", "internship", "contract", "temporary"].index(st.session_state.get("live_jobs_type", "Any")))
+        filter_d, filter_e = st.columns(2)
+        with filter_d:
+            work_mode_choice = st.selectbox("Work mode", ["Any", "remote", "hybrid", "onsite"],
+                                             index=["Any", "remote", "hybrid", "onsite"].index(st.session_state.get("live_jobs_mode", "Any")))
+        with filter_e:
+            posted_choice = st.selectbox("Posted within", ["Any", "1", "3", "7", "14", "30"],
+                                         index=["Any", "1", "3", "7", "14", "30"].index(st.session_state.get("live_jobs_posted", "7")))
+        fresher_only = st.checkbox("Fresher-friendly jobs only", value=st.session_state.get("live_jobs_fresher", True))
+        search_clicked = st.form_submit_button("Search live jobs", type="primary")
+
+    if search_clicked:
+        st.session_state["live_jobs_q"] = query.strip()
+        st.session_state["live_jobs_city"] = city.strip()
+        st.session_state["live_jobs_state"] = state.strip()
+        st.session_state["live_jobs_type"] = job_type_choice
+        st.session_state["live_jobs_mode"] = work_mode_choice
+        st.session_state["live_jobs_posted"] = posted_choice
+        st.session_state["live_jobs_fresher"] = fresher_only
+
+    if "live_jobs_searched" not in st.session_state:
+        st.session_state["live_jobs_searched"] = False
+    if search_clicked:
+        st.session_state["live_jobs_searched"] = True
+
+    if st.session_state["live_jobs_searched"]:
+        selected_type = st.session_state.get("live_jobs_type", "Any")
+        selected_mode = st.session_state.get("live_jobs_mode", "Any")
+        selected_posted = st.session_state.get("live_jobs_posted", "7")
+        with st.spinner("Searching current vacancies..."):
+            result = search_jobsforce(
+                st.session_state.get("live_jobs_q", ""),
+                st.session_state.get("live_jobs_city", ""),
+                st.session_state.get("live_jobs_state", ""),
+                "" if selected_type == "Any" else selected_type,
+                "" if selected_mode == "Any" else selected_mode,
+                st.session_state.get("live_jobs_fresher", True),
+                "" if selected_posted == "Any" else selected_posted
+            )
+
+        if result.get("error"):
+            st.error(result["error"])
+        else:
+            listings = result.get("results", [])
+            st.metric("Matching live listings", result.get("total", len(listings)))
+            for note in result.get("notes", []):
+                st.caption(note)
+            if not listings:
+                st.info("No matching live jobs were returned. Try broader keywords or remove a filter.")
+            for job in listings:
+                hiring = job.get("hiring") or {}
+                location_data = job.get("location") or {}
+                salary_data = job.get("salary") or {}
+                experience_data = job.get("experience") or {}
+                location_text = ", ".join(x for x in [location_data.get("city"), location_data.get("state"), location_data.get("country")] if x)
+                if location_data.get("remote") or job.get("work_mode") == "remote":
+                    location_text = (location_text + " · " if location_text else "") + "Remote"
+                with st.container(border=True):
+                    left, right = st.columns([4, 1])
+                    with left:
+                        st.subheader(job.get("title") or "Untitled role")
+                        st.write(f"**{hiring.get('display') or 'Employer details not provided'}** · {location_text or 'Location not specified'}")
+                        details = [x for x in [job.get("job_type"), job.get("work_mode"), job.get("category")] if x]
+                        if details:
+                            st.caption(" · ".join(details))
+                        st.write("**Experience:** " + (experience_data.get("label") or "Not specified"))
+                        st.write("**Salary:** " + (salary_data.get("label") or "Not disclosed"))
+                        skills_list = job.get("skills") or []
+                        if skills_list:
+                            st.write("**Skills:** " + ", ".join(skills_list))
+                            match_score, matched_skills = score_job(user["skills"], user["interests"], {"required_skills": ", ".join(skills_list)})
+                            st.caption("Profile skill match: " + str(match_score) + "% · Matched: " + (", ".join(matched_skills) if matched_skills else "No exact overlap yet"))
+                        st.write(job.get("summary") or "No short description provided.")
+                        dates = []
+                        if job.get("posted_date"):
+                            dates.append("Posted: " + job["posted_date"])
+                        if job.get("valid_through"):
+                            dates.append("Apply by: " + job["valid_through"])
+                        if dates:
+                            st.caption(" · ".join(dates))
+                    with right:
+                        if job.get("url"):
+                            st.link_button("View job", job["url"], use_container_width=True)
+                        if job.get("apply_url"):
+                            st.link_button("Apply", job["apply_url"], use_container_width=True)
+            st.caption("Listings are supplied by JobsForce India. Check the employer's posting and application page for the latest status before applying.")
+    else:
+        st.info("Enter a role or skill and select your filters, then choose Search live jobs.")
+    st.caption("Live job search is separate from sample-job recommendations, saved jobs and the application tracker. Existing CareerMatch features and records remain unchanged.")
 
 elif page == "Company Recommendations":
     st.title("Company Recommendations")
