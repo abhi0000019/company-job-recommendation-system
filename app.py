@@ -331,6 +331,116 @@ st.markdown("""
 .stTabs [data-baseweb="tab"]{padding:12px 18px}
 @media(max-width:800px){.cm-left{padding:10px 0 20px}.cm-title{font-size:2.3rem}.cm-auth-card{padding:20px;margin-top:0}.cm-header{padding-bottom:15px}}
 
+
+/* --- Global product polish: dashboard and every workspace page --- */
+:root { color-scheme: light; }
+html, body, [data-testid="stAppViewContainer"], .stApp {
+    background: #f6f7fc !important;
+}
+[data-testid="stHeader"] {
+    background: rgba(246,247,252,.92) !important;
+}
+[data-testid="stToolbar"] { right: 1rem; }
+[data-testid="stMainBlockContainer"] {
+    padding-top: 2.2rem !important;
+    padding-left: clamp(1.5rem, 3vw, 3.2rem) !important;
+    padding-right: clamp(1.5rem, 3vw, 3.2rem) !important;
+    max-width: 1500px !important;
+}
+[data-testid="stSidebar"] {
+    background: #172554 !important;
+    border-right: 1px solid rgba(255,255,255,.08);
+}
+[data-testid="stSidebar"] > div:first-child {
+    padding: 1.3rem 1rem 1.5rem !important;
+}
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
+    color: #e5eaff !important;
+}
+[data-testid="stSidebar"] [data-testid="stRadio"] label {
+    border-radius: 9px !important;
+    padding: .38rem .55rem !important;
+    margin: .12rem 0 !important;
+    transition: background .15s ease;
+}
+[data-testid="stSidebar"] [data-testid="stRadio"] label:hover {
+    background: rgba(255,255,255,.10) !important;
+}
+[data-testid="stSidebar"] [data-testid="stRadio"] label p {
+    color: #f8faff !important;
+    font-weight: 550 !important;
+}
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {
+    background: rgba(129,140,248,.24) !important;
+}
+.main h1 {
+    font-size: clamp(1.9rem, 3vw, 2.5rem) !important;
+    margin-bottom: .45rem !important;
+}
+.main h2 { font-size: 1.5rem !important; }
+.main h3 { font-size: 1.2rem !important; }
+[data-testid="stVerticalBlockBorderWrapper"] {
+    background: #ffffff !important;
+    border: 1px solid #e6eaf3 !important;
+    border-radius: 16px !important;
+    box-shadow: 0 5px 18px rgba(25,42,90,.055) !important;
+    padding: .35rem !important;
+}
+[data-testid="stMetric"] {
+    background: #ffffff !important;
+    border: 1px solid #e6eaf3 !important;
+    border-radius: 16px !important;
+    padding: 1.05rem 1.15rem !important;
+    box-shadow: 0 5px 18px rgba(25,42,90,.045) !important;
+}
+[data-testid="stMetricLabel"] p {
+    color: #64748b !important;
+    font-size: .84rem !important;
+    font-weight: 650 !important;
+}
+[data-testid="stMetricValue"] {
+    color: #172554 !important;
+    font-weight: 780 !important;
+}
+[data-testid="stCaptionContainer"] p {
+    color: #71809b !important;
+}
+[data-testid="stAlert"] {
+    border-radius: 13px !important;
+    border: 1px solid #e2e8f0 !important;
+}
+.stProgress > div > div > div > div {
+    background: linear-gradient(90deg,#6558df,#3982ec) !important;
+}
+.stSlider [data-baseweb="slider"] div[role="slider"] {
+    background: #6254df !important;
+}
+.stButton > button, .stFormSubmitButton > button {
+    box-shadow: 0 4px 10px rgba(79,70,229,.14) !important;
+}
+[data-testid="stDataFrame"], [data-testid="stTable"] {
+    border: 1px solid #e6eaf3 !important;
+    border-radius: 13px !important;
+    overflow: hidden !important;
+}
+[data-testid="stExpander"] {
+    background: #ffffff !important;
+    border: 1px solid #e6eaf3 !important;
+    border-radius: 13px !important;
+}
+[data-testid="stForm"] {
+    background: #ffffff !important;
+    border: 1px solid #e6eaf3 !important;
+    border-radius: 16px !important;
+    padding: 1.2rem !important;
+}
+@media (max-width: 800px) {
+    [data-testid="stMainBlockContainer"] {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+}
+
 </style>
 
 """, unsafe_allow_html=True)
