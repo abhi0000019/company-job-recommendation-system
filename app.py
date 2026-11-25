@@ -308,35 +308,81 @@ st.markdown("""
     background: #ffffff !important;
     border-radius: 12px !important;
 }
+
+/* CareerMatch landing page */
+.cm-header{display:flex;align-items:center;justify-content:space-between;padding:8px 0 30px 0}
+.cm-brand{font-size:1.65rem;font-weight:850;letter-spacing:-.7px;color:#172554}
+.cm-brand span{color:#6254df}
+.cm-pill{display:inline-block;padding:7px 13px;border:1px solid #dbe3ff;border-radius:30px;background:#ffffffb8;color:#5145cd;font-size:.78rem;font-weight:750}
+.cm-left{padding:34px 28px 30px 0}
+.cm-eyebrow{font-size:.76rem;font-weight:800;letter-spacing:.14em;color:#6254df;text-transform:uppercase;margin-bottom:16px}
+.cm-title{font-size:clamp(2.3rem,4vw,3.65rem);line-height:1.08;font-weight:850;letter-spacing:-.055em;color:#172554;margin:0 0 18px}
+.cm-title span{color:#6254df}
+.cm-description{font-size:1.08rem;line-height:1.75;color:#52617e;margin-bottom:26px}
+.cm-feature{display:flex;gap:13px;align-items:flex-start;margin:17px 0;color:#26345c}
+.cm-feature-icon{display:flex;align-items:center;justify-content:center;flex:0 0 38px;height:38px;border-radius:12px;background:#e8eaff;color:#5145cd;font-size:1.1rem}
+.cm-feature strong{display:block;color:#1e2b50;font-size:.96rem;margin-bottom:3px}
+.cm-feature small{display:block;color:#64748b;font-size:.86rem;line-height:1.45}
+.cm-trust{margin-top:28px;padding-top:18px;border-top:1px solid #dce4f7;color:#71809b;font-size:.8rem}
+.cm-auth-card{background:#fff;border:1px solid #e4e9f7;border-radius:24px;padding:26px 28px;box-shadow:0 22px 65px rgba(44,55,112,.13);margin-top:8px}
+.cm-auth-title{font-size:1.55rem;font-weight:800;color:#172554;letter-spacing:-.03em;margin-bottom:5px}
+.cm-auth-sub{color:#71809b;font-size:.9rem;margin-bottom:18px}
+.cm-footer{text-align:center;color:#8490a8;font-size:.78rem;padding:28px 0 8px}
+.stTabs [data-baseweb="tab"]{padding:12px 18px}
+@media(max-width:800px){.cm-left{padding:10px 0 20px}.cm-title{font-size:2.3rem}.cm-auth-card{padding:20px;margin-top:0}.cm-header{padding-bottom:15px}}
+
 </style>
 
 """, unsafe_allow_html=True)
 
 user = current_user()
 if not user:
-    st.title("🎯 CareerMatch")
-    st.caption("Company Selection and Job Recommendation System")
-    left, right = st.columns([1.15, 1])
+    st.markdown("""
+    <div class="cm-header">
+      <div class="cm-brand">Career<span>Match</span> 🎯</div>
+      <div class="cm-pill">SMARTER CAREER DISCOVERY</div>
+    </div>
+    """, unsafe_allow_html=True)
+    left, right = st.columns([1.08, 0.92], gap="large")
     with left:
-        st.subheader("Find opportunities that match your skills")
-        st.write("Create a profile, explore sample job listings, discover skill gaps and organize your applications in one place.")
-        st.info("This academic prototype uses clearly labelled sample/demo job data. It does not verify live vacancies.")
+        st.markdown("""
+        <div class="cm-left">
+          <div class="cm-eyebrow">YOUR CAREER, WITH DIRECTION</div>
+          <div class="cm-title">Find work that fits.<br><span>Build what’s next.</span></div>
+          <div class="cm-description">Bring your skills, interests and ambitions together. Explore career paths, discover skill gaps and keep your job search organised in one place.</div>
+          <div class="cm-feature">
+            <div class="cm-feature-icon">✦</div>
+            <div><strong>Relevant job matches</strong><small>See how your current skills align with sample job opportunities.</small></div>
+          </div>
+          <div class="cm-feature">
+            <div class="cm-feature-icon">⌁</div>
+            <div><strong>Clear skill development</strong><small>Identify missing skills and follow a practical learning roadmap.</small></div>
+          </div>
+          <div class="cm-feature">
+            <div class="cm-feature-icon">✓</div>
+            <div><strong>Stay organised</strong><small>Save roles, shortlist companies and track application progress.</small></div>
+          </div>
+          <div class="cm-trust">A career-planning workspace designed to help you take the next step with confidence.</div>
+        </div>
+        """, unsafe_allow_html=True)
     with right:
-        tab1, tab2 = st.tabs(["Login", "Create account"])
+        st.markdown('<div class="cm-auth-card">', unsafe_allow_html=True)
+        st.markdown('<div class="cm-auth-title">Welcome to CareerMatch</div><div class="cm-auth-sub">Sign in or create an account to get started.</div>', unsafe_allow_html=True)
+        tab1, tab2 = st.tabs(["Log in", "Create account"])
         with tab1:
-            email = st.text_input("Email address", key="login_email")
-            password = st.text_input("Password", type="password", key="login_password")
-            if st.button("Login", type="primary", use_container_width=True):
+            email = st.text_input("Email address", key="login_email", placeholder="you@example.com")
+            password = st.text_input("Password", type="password", key="login_password", placeholder="Enter your password")
+            if st.button("Log in to CareerMatch", type="primary", use_container_width=True):
                 if login_user(email, password):
                     st.rerun()
                 else:
                     st.error("Invalid email or password.")
         with tab2:
-            name = st.text_input("Full name", key="reg_name")
-            reg_email = st.text_input("Email address", key="reg_email")
-            p1 = st.text_input("Password (minimum 8 characters)", type="password", key="reg_pass")
-            p2 = st.text_input("Confirm password", type="password", key="reg_confirm")
-            if st.button("Create account", use_container_width=True):
+            name = st.text_input("Full name", key="reg_name", placeholder="Your full name")
+            reg_email = st.text_input("Email address", key="reg_email", placeholder="you@example.com")
+            p1 = st.text_input("Password (minimum 8 characters)", type="password", key="reg_pass", placeholder="Create a password")
+            p2 = st.text_input("Confirm password", type="password", key="reg_confirm", placeholder="Re-enter your password")
+            if st.button("Create my account", type="primary", use_container_width=True):
                 if not name.strip() or not reg_email.strip():
                     st.error("Please enter your name and email.")
                 elif len(p1) < 8:
@@ -346,6 +392,8 @@ if not user:
                 else:
                     ok, msg = register_user(name, reg_email, p1)
                     (st.success if ok else st.error)(msg)
+        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('<div class="cm-footer">CareerMatch · Company Selection &amp; Job Recommendation System<br>Academic prototype · Sample listings are illustrative and are not verified live vacancies.</div>', unsafe_allow_html=True)
     st.stop()
 
 # Sidebar navigation
