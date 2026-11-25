@@ -809,39 +809,55 @@ elif page == "My Profile":
             st.rerun()
 
 elif page == "Job Recommendations":
-    st.title("Job Recommendations")
-    st.write("Recommendations are ranked using the overlap between your profile skills/interests and each job's required skills.")
-    jobs = get_jobs()
+    st.title("Personalized Live Job Recommendations")
+    st.write("CareerMatch searches current external vacancies and ranks them against the skills and interests in your profile. Sample database jobs are not shown here.")
+
+    profile_query = (user["interests"] or user["skills"] or "fresher").strip()
     if not user["skills"] and not user["interests"]:
-        st.warning("Add skills and career interests in My Profile to get personalized recommendations.")
-    ranked = []
-    for job in jobs:
-        score, matched = score_job(user["skills"], user["interests"], job)
-        ranked.append((score, matched, job))
-    ranked.sort(key=lambda x: x[0], reverse=True)
-    minimum = st.slider("Minimum match score", 0, 100, 0, 5)
-    for score, matched, job in ranked:
-        if score < minimum: continue
-        with st.container(border=True):
-            a,b = st.columns([4,1])
-            with a:
-                st.subheader(job["title"])
-                st.write(f"**{job['company_name']}** · {job['location']} · {job['job_type']}")
-                st.write(f"Required skills: {job['required_skills']}")
-                st.write(f"Qualification: {job['min_qualification']} | Experience: {job['experience_level']}")
-                st.write(f"Salary (illustrative): {job['salary_range']}")
-                st.caption(job["description"])
-                st.caption("Matched skills: " + (", ".join(matched) if matched else "No exact skill overlap yet"))
-            with b:
-                st.metric("Match", f"{score}%")
-                if st.button("Save job", key=f"save_{job['id']}"):
-                    save_job(job["id"])
-                    st.success("Saved")
-                if st.button("Track application", key=f"track_{job['id']}"):
-                    with get_conn() as con:
-                        con.execute("INSERT INTO applications(user_id,job_id,status,applied_on) VALUES(?,?,?,?)",
-                                    (user["id"],job["id"],"Interested",datetime.now().strftime("%Y-%m-%d")))
-                    st.success("Added to tracker")
+        st.warning("Add your skills and career interests in My Profile to improve your recommendations. Showing fresher-friendly live vacancies for now.")
+
+    with st.spinner("Finding live jobs that match your profile..."):
+        result = search_jobsforce(profile_query, "", "", "", "", True, "7")
+
+    if result.get("error"):
+        st.error(result["error"])
+        st.info("You can retry from the Live Jobs page after checking your internet connection.")
+    else:
+        listings = result.get("results", [])
+        st.metric("Matching live listings", result.get("total", len(listings)))
+        if not listings:
+            st.info("No matching live jobs were returned. Update your skills/interests or try broader keywords in Live Jobs.")
+        for job in listings:
+            hiring = job.get("hiring") or {}
+            location_data = job.get("location") or {}
+            salary_data = job.get("salary") or {}
+            experience_data = job.get("experience") or {}
+            location_text = ", ".join(x for x in [location_data.get("city"), location_data.get("state"), location_data.get("country")] if x)
+            if location_data.get("remote") or job.get("work_mode") == "remote":
+                location_text = (location_text + " · " if location_text else "") + "Remote"
+            skills_list = job.get("skills") or []
+            match_score, matched_skills = score_job(
+                user["skills"], user["interests"],
+                {"required_skills": ", ".join(skills_list)}
+            )
+            with st.container(border=True):
+                left, right = st.columns([4, 1])
+                with left:
+                    st.subheader(job.get("title") or "Untitled role")
+                    st.write(f"**{hiring.get('display') or 'Employer details not provided'}** · {location_text or 'Location not specified'}")
+                    st.write("**Experience:** " + (experience_data.get("label") or "Not specified"))
+                    st.write("**Salary:** " + (salary_data.get("label") or "Not disclosed"))
+                    if skills_list:
+                        st.write("**Skills:** " + ", ".join(skills_list))
+                    st.caption("Matched profile skills: " + (", ".join(matched_skills) if matched_skills else "No exact skill overlap identified"))
+                    st.write(job.get("summary") or "No short description provided.")
+                with right:
+                    st.metric("Skill match", f"{match_score}%")
+                    if job.get("url"):
+                        st.link_button("View job", job["url"], use_container_width=True)
+                    if job.get("apply_url"):
+                        st.link_button("Apply", job["apply_url"], use_container_width=True)
+        st.caption("These vacancies are fetched from JobsForce India. Verify the employer's posting and application page before applying.")
 
 elif page == "Live Jobs":
     st.title("Live Job Search")
