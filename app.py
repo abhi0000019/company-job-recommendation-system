@@ -5,6 +5,10 @@ import secrets
 import re
 from datetime import datetime
 from pathlib import Path
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
 
 DB_PATH = Path(__file__).parent / "database.db"
 
@@ -58,6 +62,65 @@ def init_db():
             user_id INTEGER, job_id INTEGER, status TEXT DEFAULT 'Interested',
             applied_on TEXT, notes TEXT DEFAULT ''
         );
+        """)
+
+        # Employer accounts and company profiles
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS employers(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                contact_name TEXT NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                company_name TEXT NOT NULL,
+                industry TEXT DEFAULT '',
+                location TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                website TEXT DEFAULT '',
+                company_size TEXT DEFAULT '',
+                verification_status TEXT DEFAULT 'pending',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Safely add approval fields to the existing jobs table
+        job_columns = {
+            row["name"] for row in
+            con.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+
+        new_job_columns = {
+            "employer_id": "INTEGER",
+            "approval_status": "TEXT NOT NULL DEFAULT 'approved'",
+            "reviewed_at": "TEXT",
+            "reviewed_by": "TEXT",
+            "rejection_reason": "TEXT"
+        }
+
+        for column, definition in new_job_columns.items():
+            if column not in job_columns:
+                con.execute(
+                    f"ALTER TABLE jobs ADD COLUMN {column} {definition}"
+                )
+        # Actual candidate applications submitted to employer jobs
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS job_applications(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                employer_id INTEGER NOT NULL,
+                user_id INTEGER,
+                candidate_name TEXT NOT NULL,
+                candidate_email TEXT NOT NULL,
+                phone TEXT DEFAULT '',
+                resume_filename TEXT DEFAULT '',
+                resume_data BLOB,
+                cover_letter TEXT DEFAULT '',
+                application_status TEXT DEFAULT 'Submitted',
+                submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(job_id) REFERENCES jobs(id),
+                FOREIGN KEY(employer_id) REFERENCES employers(id),
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
         """)
         count = con.execute("SELECT COUNT(*) FROM companies").fetchone()[0]
         if count == 0:
@@ -124,7 +187,72 @@ def login_user(email, password):
         st.session_state.user_id = user["id"]
         return True
     return False
+def current_employer():
+    if "employer_id" not in st.session_state:
+        return None
+    with get_conn() as con:
+        return con.execute(
+            "SELECT * FROM employers WHERE id=?",
+            (st.session_state.employer_id,)
+        ).fetchone()
 
+
+def register_employer(contact_name, email, password, company_name,
+                      industry="", location="", description="",
+                      website="", company_size=""):
+    digest, salt = make_password(password)
+
+    try:
+        with get_conn() as con:
+            con.execute("""
+                INSERT INTO employers(
+                    contact_name, email, password_hash, salt,
+                    company_name, industry, location, description,
+                    website, company_size, verification_status
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?, 'pending')
+            """, (
+                contact_name.strip(),
+                email.strip().lower(),
+                digest,
+                salt,
+                company_name.strip(),
+                industry.strip(),
+                location.strip(),
+                description.strip(),
+                website.strip(),
+                company_size
+            ))
+
+        return True, "Employer registration submitted. Please wait for admin verification."
+
+    except sqlite3.IntegrityError:
+        return False, "An employer account with this email already exists."
+
+
+def login_employer(email, password):
+    with get_conn() as con:
+        employer = con.execute(
+            "SELECT * FROM employers WHERE email=?",
+            (email.strip().lower(),)
+        ).fetchone()
+
+    if not employer or not verify_password(
+        password, employer["password_hash"], employer["salt"]
+    ):
+        return False, "Invalid employer email or password."
+
+    if employer["verification_status"] == "pending":
+        return False, "Your employer account is awaiting admin verification."
+
+    if employer["verification_status"] != "approved":
+        return False, "Your employer account has not been approved."
+
+    st.session_state.pop("user_id", None)
+    st.session_state.pop("is_admin", None)
+    st.session_state["employer_id"] = employer["id"]
+
+    return True, "Employer login successful."
 
 def admin_credentials():
     try:
@@ -159,18 +287,69 @@ def extract_resume_text(uploaded_file):
         if name.endswith(".txt"):
             return uploaded_file.getvalue().decode("utf-8", errors="ignore")
         if name.endswith(".pdf"):
-            from pypdf import PdfReader
             import io
+            import importlib
+            try:
+                PdfReader = importlib.import_module("pypdf").PdfReader
+            except ImportError:
+                PdfReader = importlib.import_module("PyPDF2").PdfReader
             reader = PdfReader(io.BytesIO(uploaded_file.getvalue()))
             return "\n".join(page.extract_text() or "" for page in reader.pages)
         if name.endswith(".docx"):
-            from docx import Document
+            import importlib
+            Document = importlib.import_module("docx").Document
             import io
             doc = Document(io.BytesIO(uploaded_file.getvalue()))
             return "\n".join(p.text for p in doc.paragraphs)
     except Exception as exc:
         st.error(f"Could not read this file: {exc}")
     return ""
+
+# -------------------- LIVE JOBS API --------------------
+@st.cache_data(ttl=300, show_spinner=False)
+def search_jobsforce(q, city, state, job_type, work_mode, fresher, posted_within_days):
+    """Fetch current public listings from JobsForce India; no API key is required."""
+    params = {"per_page": 20, "page": 1}
+    if q:
+        params["q"] = q[:200]
+    if city:
+        params["city"] = city[:80]
+    if state:
+        params["state"] = state[:80]
+    if job_type:
+        params["job_type"] = job_type
+    if work_mode:
+        params["work_mode"] = work_mode
+    if fresher:
+        params["fresher"] = "true"
+    if posted_within_days:
+        params["posted_within_days"] = int(posted_within_days)
+
+    url = "https://jobsforceindia.com/api/public/v1/jobs?" + urllib.parse.urlencode(params)
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json", "User-Agent": "CareerMatch/1.0"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            return {"error": "The jobs provider returned an unexpected response."}
+        return payload
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            return {"error": "The jobs provider is receiving too many requests. Please wait a minute and try again."}
+        try:
+            detail = json.loads(exc.read().decode("utf-8"))
+            message = detail.get("error", {}).get("message", "")
+        except Exception:
+            message = ""
+        return {"error": message or f"Jobs provider returned HTTP {exc.code}."}
+    except urllib.error.URLError:
+        return {"error": "Could not connect to JobsForce India. Check your internet connection and try again."}
+    except Exception:
+        return {"error": "Live job search is temporarily unavailable. Please try again later."}
+
 
 # -------------------- UI --------------------
 st.markdown("""
@@ -456,12 +635,30 @@ html, body, [data-testid="stAppViewContainer"], .stApp {
     }
 }
 
+
+/* Authentication tabs: keep every tab label readable on the light card */
+.stTabs [data-baseweb="tab"],
+.stTabs [data-baseweb="tab"] *,
+.stTabs button[role="tab"],
+.stTabs button[role="tab"] * {
+    color: #334155 !important;
+    opacity: 1 !important;
+}
+.stTabs [data-baseweb="tab"][aria-selected="true"],
+.stTabs [data-baseweb="tab"][aria-selected="true"] *,
+.stTabs button[role="tab"][aria-selected="true"],
+.stTabs button[role="tab"][aria-selected="true"] * {
+    color: #5145cd !important;
+}
+
 </style>
 
 """, unsafe_allow_html=True)
 
 user = current_user()
-if not user:
+employer = current_employer()
+
+if not user and not employer and not st.session_state.get("is_admin", False):
     st.markdown("""
     <div class="cm-header">
       <div class="cm-brand">Career<span>Match</span> 🎯</div>
@@ -493,7 +690,13 @@ if not user:
     with right:
         st.markdown('<div class="cm-auth-card">', unsafe_allow_html=True)
         st.markdown('<div class="cm-auth-title">Welcome to CareerMatch</div><div class="cm-auth-sub">Sign in or create an account to get started.</div>', unsafe_allow_html=True)
-        tab1, tab2, tab3 = st.tabs(["Log in", "Create account", "Admin Login"])
+
+       
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "Job Seeker Login", "Create Account",
+            "Employer Portal", "Admin Login"
+        ])
+
         with tab1:
             email = st.text_input("Email address", key="login_email", placeholder="you@example.com")
             password = st.text_input("Password", type="password", key="login_password", placeholder="Enter your password")
@@ -502,6 +705,7 @@ if not user:
                     st.rerun()
                 else:
                     st.error("Invalid email or password.")
+
         with tab2:
             name = st.text_input("Full name", key="reg_name", placeholder="Your full name")
             reg_email = st.text_input("Email address", key="reg_email", placeholder="you@example.com")
@@ -519,6 +723,78 @@ if not user:
                     (st.success if ok else st.error)(msg)
 
         with tab3:
+            st.markdown("### Employer Portal")
+            st.caption("Register your organisation or sign in to manage your vacancies.")
+
+            employer_login_tab, employer_register_tab = st.tabs([
+                "Employer Login", "Register as Employer"
+            ])
+
+            with employer_login_tab:
+                employer_email = st.text_input(
+                    "Employer email", key="employer_login_email"
+                )
+                employer_password = st.text_input(
+                    "Password", type="password", key="employer_login_password"
+                )
+
+                if st.button("Sign in as Employer", type="primary", use_container_width=True):
+                    ok, msg = login_employer(employer_email, employer_password)
+                    if ok:
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+            with employer_register_tab:
+                with st.form("employer_registration_form"):
+                    contact_name = st.text_input("Recruiter / Contact person name")
+                    company_name = st.text_input("Company / Organisation name")
+                    employer_reg_email = st.text_input("Official email address")
+                    employer_reg_password = st.text_input(
+                        "Password (minimum 8 characters)", type="password"
+                    )
+                    employer_confirm_password = st.text_input(
+                        "Confirm password", type="password"
+                    )
+                    industry = st.text_input("Industry")
+                    employer_location = st.text_input("Company location")
+                    company_website = st.text_input("Company website")
+                    company_size = st.selectbox(
+                        "Company size",
+                        ["1-10 employees", "11-50 employees",
+                         "51-200 employees", "201-500 employees",
+                         "501-1000 employees", "1000+ employees"]
+                    )
+                    company_description = st.text_area("Company description")
+
+                    employer_submitted = st.form_submit_button(
+                        "Submit Employer Registration",
+                        type="primary",
+                        use_container_width=True
+                    )
+
+                if employer_submitted:
+                    if not contact_name.strip() or not company_name.strip() or not employer_reg_email.strip():
+                        st.error("Please complete the contact name, company name and email.")
+                    elif len(employer_reg_password) < 8:
+                        st.error("Password must contain at least 8 characters.")
+                    elif employer_reg_password != employer_confirm_password:
+                        st.error("Passwords do not match.")
+                    else:
+                        ok, msg = register_employer(
+                            contact_name,
+                            employer_reg_email,
+                            employer_reg_password,
+                            company_name,
+                            industry,
+                            employer_location,
+                            company_description,
+                            company_website,
+                            company_size
+                        )
+                        (st.success if ok else st.error)(msg)
+
+        with tab4:
             st.markdown("**Administrator access**")
             admin_email = st.text_input("Admin email", key="admin_login_email", placeholder="admin@example.com")
             admin_password = st.text_input("Admin password", type="password", key="admin_login_password", placeholder="Enter admin password")
@@ -529,8 +805,6 @@ if not user:
                     st.rerun()
                 else:
                     st.error("Admin credentials are incorrect or admin access has not been configured.")
-        st.markdown('</div>', unsafe_allow_html=True)
-    st.markdown('<div class="cm-footer">CareerMatch · Company Selection &amp; Job Recommendation System<br>Academic prototype · Sample listings are illustrative and are not verified live vacancies.</div>', unsafe_allow_html=True)
     st.stop()
 
 
@@ -609,12 +883,263 @@ if st.session_state.get("is_admin", False):
         st.caption("Company records are displayed here. Editing and deletion can be added after the admin workflow is verified.")
     st.info("Job listings in this academic prototype are sample/demo data and are not verified live vacancies.")
     st.stop()
+def submit_employer_job(employer, title, location, job_type,
+                        required_skills, min_qualification,
+                        experience_level, salary_range, description):
 
+    with get_conn() as con:
+        # Find the employer's company record
+        company = con.execute(
+            "SELECT id FROM companies WHERE name=?",
+            (employer["company_name"].strip(),)
+        ).fetchone()
+
+        # Create a company record if one does not already exist
+        if company:
+            company_id = company["id"]
+        else:
+            cursor = con.execute("""
+                INSERT INTO companies(
+                    name, industry, location, description, website, size
+                )
+                VALUES(?,?,?,?,?,?)
+            """, (
+                employer["company_name"].strip(),
+                employer["industry"],
+                employer["location"],
+                employer["description"],
+                employer["website"],
+                employer["company_size"]
+            ))
+            company_id = cursor.lastrowid
+
+        # Submit the vacancy for administrator approval
+        con.execute("""
+            INSERT INTO jobs(
+                company_id, title, location, job_type,
+                required_skills, min_qualification,
+                experience_level, salary_range, description,
+                is_demo, employer_id, approval_status
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,0,?,'pending')
+        """, (
+            company_id, title.strip(), location.strip(), job_type,
+            required_skills.strip(), min_qualification,
+            experience_level, salary_range, description.strip(),
+            employer["id"]
+        ))
+
+    return True, "Job submitted successfully. It is awaiting admin approval."
+
+# Employer dashboard
+if employer:
+    st.sidebar.title("🏢 CareerMatch Employer")
+    st.sidebar.caption("Employer Control Panel")
+    st.sidebar.write(f"Welcome, **{employer['contact_name']}**")
+
+    if st.sidebar.button("Employer Logout", use_container_width=True):
+        st.session_state.pop("employer_id", None)
+        st.rerun()
+
+    st.title("Employer Dashboard")
+    st.caption(f"Company: {employer['company_name']}")
+
+    if employer["verification_status"] != "approved":
+        st.warning("Your employer account is awaiting admin verification.")
+        st.info("You will be able to manage vacancies after approval.")
+        st.stop()
+
+    # Employer job statistics
+    with get_conn() as con:
+        total_jobs = con.execute(
+            "SELECT COUNT(*) FROM jobs WHERE employer_id=?",
+            (employer["id"],)
+        ).fetchone()[0]
+
+        pending_jobs = con.execute(
+            """SELECT COUNT(*) FROM jobs
+               WHERE employer_id=? AND approval_status='pending'""",
+            (employer["id"],)
+        ).fetchone()[0]
+
+        approved_jobs = con.execute(
+            """SELECT COUNT(*) FROM jobs
+               WHERE employer_id=? AND approval_status='approved'""",
+            (employer["id"],)
+        ).fetchone()[0]
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Jobs", total_jobs)
+    col2.metric("Approved Jobs", approved_jobs)
+    col3.metric("Pending Approval", pending_jobs)
+
+    st.subheader("Employer Portal")
+    st.caption(
+        "Manage your organisation's vacancies and monitor their approval status."
+    )
+
+    # Post a new job
+    st.subheader("Post a New Job")
+    st.subheader("Post a New Job")
+
+    with st.form("employer_job_form", clear_on_submit=True):
+        job_title = st.text_input("Job Title")
+        job_location = st.text_input("Job Location")
+        job_type = st.selectbox(
+            "Job Type",
+            ["Full-time", "Internship", "Part-time", "Contract"]
+        )
+        required_skills = st.text_input(
+            "Required Skills (comma-separated)"
+        )
+        min_qualification = st.text_input("Minimum Qualification")
+        experience_level = st.selectbox(
+            "Experience Level",
+            ["Fresher", "Intern", "0–2 years", "2+ years"]
+        )
+        salary_range = st.text_input(
+            "Salary Range",
+            "Not specified"
+        )
+        job_description = st.text_area("Job Description")
+
+        job_submitted = st.form_submit_button(
+            "Submit Job for Approval",
+            type="primary",
+            use_container_width=True
+        )
+
+    if job_submitted:
+        if not job_title.strip() or not required_skills.strip():
+            st.error("Job title and required skills are required.")
+        else:
+            ok, msg = submit_employer_job(
+                employer,
+                job_title,
+                job_location,
+                job_type,
+                required_skills,
+                min_qualification,
+                experience_level,
+                salary_range,
+                job_description
+            )
+
+            if ok:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+
+    # Display only this employer's jobs
+    st.subheader("My Job Listings")
+
+    with get_conn() as con:
+        employer_jobs = con.execute(
+            """SELECT id, title, location, job_type,
+                      required_skills, approval_status,
+                      rejection_reason
+               FROM jobs
+               WHERE employer_id=?
+               ORDER BY id DESC""",
+            (employer["id"],)
+        ).fetchall()
+
+    if employer_jobs:
+        for job in employer_jobs:
+            with st.container(border=True):
+                st.markdown(f"**{job['title']}**")
+                st.write(
+                    f"Location: {job['location']} · "
+                    f"Type: {job['job_type']}"
+                )
+                st.write(f"Skills: {job['required_skills']}")
+
+                st.write(
+                    f"Approval Status: {job['approval_status'].title()}"
+                )
+
+                if job["rejection_reason"]:
+                    st.error(
+                        f"Admin feedback: {job['rejection_reason']}"
+                    )
+    else:
+        st.info("You have not posted any jobs yet.")
+
+    st.stop()
+
+    st.subheader("Post a New Job")
+
+    with st.form("employer_job_form"):
+        job_title = st.text_input("Job Title")
+        job_location = st.text_input("Job Location")
+
+        job_type = st.selectbox(
+            "Job Type",
+            ["Full-time", "Part-time", "Internship", "Contract"]
+        )
+
+        required_skills = st.text_area(
+            "Required Skills",
+            placeholder="Example: Python, SQL, Excel, Machine Learning"
+        )
+
+        min_qualification = st.selectbox(
+            "Minimum Qualification",
+            [
+                "Any graduate",
+                "BCA / BSc / BTech",
+                "BCA / MCA / BTech / MSc",
+                "Pursuing bachelor's degree",
+                "12th Pass",
+                "Other"
+            ]
+        )
+
+        experience_level = st.selectbox(
+            "Experience Level",
+            ["Fresher", "0-1 years", "1-2 years", "2-5 years", "5+ years"]
+        )
+
+        salary_range = st.text_input(
+            "Salary / Stipend",
+            placeholder="Example: ₹3-5 LPA or ₹15,000/month"
+        )
+
+        job_description = st.text_area("Job Description", height=150)
+
+        submit_job = st.form_submit_button(
+            "Submit Job for Admin Approval",
+            type="primary",
+            use_container_width=True
+        )
+
+    if submit_job:
+        if not job_title.strip() or not job_location.strip():
+            st.error("Please enter the job title and location.")
+        elif not required_skills.strip() or not job_description.strip():
+            st.error("Please enter required skills and job description.")
+        else:
+            success, message = submit_employer_job(
+                employer, job_title, job_location, job_type,
+                required_skills, min_qualification,
+                experience_level, salary_range, job_description
+            )
+
+            if success:
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+    st.stop()
+
+if user is None:
+    st.stop()
 # Sidebar navigation
 with st.sidebar:
     st.title("🎯 CareerMatch")
     st.write(f"Welcome, **{user['name']}**")
-    page = st.radio("Navigation", ["Dashboard", "My Profile", "Job Recommendations", "Company Recommendations", "Company Explorer", "Skill Gap & Roadmap", "Resume Analyzer", "Saved Jobs", "Application Tracker", "Compare Companies"])
+    page = st.radio("Navigation", ["Dashboard", "My Profile", "Job Recommendations", "Live Jobs", "Company Recommendations", "Company Explorer", "Skill Gap & Roadmap", "Resume Analyzer", "Saved Jobs", "Application Tracker", "Compare Companies"])
     if st.button("Logout", use_container_width=True):
         st.session_state.pop("user_id", None)
         st.session_state.pop("is_admin", None)
@@ -743,39 +1268,160 @@ elif page == "My Profile":
             st.rerun()
 
 elif page == "Job Recommendations":
-    st.title("Job Recommendations")
-    st.write("Recommendations are ranked using the overlap between your profile skills/interests and each job's required skills.")
-    jobs = get_jobs()
+    st.title("Personalized Live Job Recommendations")
+    st.write("CareerMatch searches current external vacancies and ranks them against the skills and interests in your profile. Sample database jobs are not shown here.")
+
+    profile_query = (user["interests"] or user["skills"] or "fresher").strip()
     if not user["skills"] and not user["interests"]:
-        st.warning("Add skills and career interests in My Profile to get personalized recommendations.")
-    ranked = []
-    for job in jobs:
-        score, matched = score_job(user["skills"], user["interests"], job)
-        ranked.append((score, matched, job))
-    ranked.sort(key=lambda x: x[0], reverse=True)
-    minimum = st.slider("Minimum match score", 0, 100, 0, 5)
-    for score, matched, job in ranked:
-        if score < minimum: continue
-        with st.container(border=True):
-            a,b = st.columns([4,1])
-            with a:
-                st.subheader(job["title"])
-                st.write(f"**{job['company_name']}** · {job['location']} · {job['job_type']}")
-                st.write(f"Required skills: {job['required_skills']}")
-                st.write(f"Qualification: {job['min_qualification']} | Experience: {job['experience_level']}")
-                st.write(f"Salary (illustrative): {job['salary_range']}")
-                st.caption(job["description"])
-                st.caption("Matched skills: " + (", ".join(matched) if matched else "No exact skill overlap yet"))
-            with b:
-                st.metric("Match", f"{score}%")
-                if st.button("Save job", key=f"save_{job['id']}"):
-                    save_job(job["id"])
-                    st.success("Saved")
-                if st.button("Track application", key=f"track_{job['id']}"):
-                    with get_conn() as con:
-                        con.execute("INSERT INTO applications(user_id,job_id,status,applied_on) VALUES(?,?,?,?)",
-                                    (user["id"],job["id"],"Interested",datetime.now().strftime("%Y-%m-%d")))
-                    st.success("Added to tracker")
+        st.warning("Add your skills and career interests in My Profile to improve your recommendations. Showing fresher-friendly live vacancies for now.")
+
+    with st.spinner("Finding live jobs that match your profile..."):
+        result = search_jobsforce(profile_query, "", "", "", "", True, "7")
+
+    if result.get("error"):
+        st.error(result["error"])
+        st.info("You can retry from the Live Jobs page after checking your internet connection.")
+    else:
+        listings = result.get("results", [])
+        st.metric("Matching live listings", result.get("total", len(listings)))
+        if not listings:
+            st.info("No matching live jobs were returned. Update your skills/interests or try broader keywords in Live Jobs.")
+        for job in listings:
+            hiring = job.get("hiring") or {}
+            location_data = job.get("location") or {}
+            salary_data = job.get("salary") or {}
+            experience_data = job.get("experience") or {}
+            location_text = ", ".join(x for x in [location_data.get("city"), location_data.get("state"), location_data.get("country")] if x)
+            if location_data.get("remote") or job.get("work_mode") == "remote":
+                location_text = (location_text + " · " if location_text else "") + "Remote"
+            skills_list = job.get("skills") or []
+            match_score, matched_skills = score_job(
+                user["skills"], user["interests"],
+                {"required_skills": ", ".join(skills_list)}
+            )
+            with st.container(border=True):
+                left, right = st.columns([4, 1])
+                with left:
+                    st.subheader(job.get("title") or "Untitled role")
+                    st.write(f"**{hiring.get('display') or 'Employer details not provided'}** · {location_text or 'Location not specified'}")
+                    st.write("**Experience:** " + (experience_data.get("label") or "Not specified"))
+                    st.write("**Salary:** " + (salary_data.get("label") or "Not disclosed"))
+                    if skills_list:
+                        st.write("**Skills:** " + ", ".join(skills_list))
+                    st.caption("Matched profile skills: " + (", ".join(matched_skills) if matched_skills else "No exact skill overlap identified"))
+                    st.write(job.get("summary") or "No short description provided.")
+                with right:
+                    st.metric("Skill match", f"{match_score}%")
+                    if job.get("url"):
+                        st.link_button("View job", job["url"], use_container_width=True)
+                    if job.get("apply_url"):
+                        st.link_button("Apply", job["apply_url"], use_container_width=True)
+        st.caption("These vacancies are fetched from JobsForce India. Verify the employer's posting and application page before applying.")
+
+elif page == "Live Jobs":
+    st.title("Live Job Search")
+    st.write("Search current public vacancies from JobsForce India. These listings are fetched from the provider when you search; they are separate from CareerMatch's sample jobs.")
+
+    with st.form("jobsforce_search_form"):
+        default_query = (user["interests"] or user["skills"] or "")[:200]
+        query = st.text_input("Job title or skills", value=st.session_state.get("live_jobs_q", default_query),
+                              placeholder="e.g. Python Developer, Data Analyst, SQL")
+        filter_a, filter_b, filter_c = st.columns(3)
+        with filter_a:
+            city = st.text_input("City", value=st.session_state.get("live_jobs_city", ""), placeholder="e.g. Lucknow")
+        with filter_b:
+            state = st.text_input("State", value=st.session_state.get("live_jobs_state", ""), placeholder="e.g. Uttar Pradesh")
+        with filter_c:
+            job_type_choice = st.selectbox("Job type", ["Any", "full-time", "part-time", "internship", "contract", "temporary"],
+                                            index=["Any", "full-time", "part-time", "internship", "contract", "temporary"].index(st.session_state.get("live_jobs_type", "Any")))
+        filter_d, filter_e = st.columns(2)
+        with filter_d:
+            work_mode_choice = st.selectbox("Work mode", ["Any", "remote", "hybrid", "onsite"],
+                                             index=["Any", "remote", "hybrid", "onsite"].index(st.session_state.get("live_jobs_mode", "Any")))
+        with filter_e:
+            posted_choice = st.selectbox("Posted within", ["Any", "1", "3", "7", "14", "30"],
+                                         index=["Any", "1", "3", "7", "14", "30"].index(st.session_state.get("live_jobs_posted", "7")))
+        fresher_only = st.checkbox("Fresher-friendly jobs only", value=st.session_state.get("live_jobs_fresher", True))
+        search_clicked = st.form_submit_button("Search live jobs", type="primary")
+
+    if search_clicked:
+        st.session_state["live_jobs_q"] = query.strip()
+        st.session_state["live_jobs_city"] = city.strip()
+        st.session_state["live_jobs_state"] = state.strip()
+        st.session_state["live_jobs_type"] = job_type_choice
+        st.session_state["live_jobs_mode"] = work_mode_choice
+        st.session_state["live_jobs_posted"] = posted_choice
+        st.session_state["live_jobs_fresher"] = fresher_only
+
+    if "live_jobs_searched" not in st.session_state:
+        st.session_state["live_jobs_searched"] = False
+    if search_clicked:
+        st.session_state["live_jobs_searched"] = True
+
+    if st.session_state["live_jobs_searched"]:
+        selected_type = st.session_state.get("live_jobs_type", "Any")
+        selected_mode = st.session_state.get("live_jobs_mode", "Any")
+        selected_posted = st.session_state.get("live_jobs_posted", "7")
+        with st.spinner("Searching current vacancies..."):
+            result = search_jobsforce(
+                st.session_state.get("live_jobs_q", ""),
+                st.session_state.get("live_jobs_city", ""),
+                st.session_state.get("live_jobs_state", ""),
+                "" if selected_type == "Any" else selected_type,
+                "" if selected_mode == "Any" else selected_mode,
+                st.session_state.get("live_jobs_fresher", True),
+                "" if selected_posted == "Any" else selected_posted
+            )
+
+        if result.get("error"):
+            st.error(result["error"])
+        else:
+            listings = result.get("results", [])
+            st.metric("Matching live listings", result.get("total", len(listings)))
+            for note in result.get("notes", []):
+                st.caption(note)
+            if not listings:
+                st.info("No matching live jobs were returned. Try broader keywords or remove a filter.")
+            for job in listings:
+                hiring = job.get("hiring") or {}
+                location_data = job.get("location") or {}
+                salary_data = job.get("salary") or {}
+                experience_data = job.get("experience") or {}
+                location_text = ", ".join(x for x in [location_data.get("city"), location_data.get("state"), location_data.get("country")] if x)
+                if location_data.get("remote") or job.get("work_mode") == "remote":
+                    location_text = (location_text + " · " if location_text else "") + "Remote"
+                with st.container(border=True):
+                    left, right = st.columns([4, 1])
+                    with left:
+                        st.subheader(job.get("title") or "Untitled role")
+                        st.write(f"**{hiring.get('display') or 'Employer details not provided'}** · {location_text or 'Location not specified'}")
+                        details = [x for x in [job.get("job_type"), job.get("work_mode"), job.get("category")] if x]
+                        if details:
+                            st.caption(" · ".join(details))
+                        st.write("**Experience:** " + (experience_data.get("label") or "Not specified"))
+                        st.write("**Salary:** " + (salary_data.get("label") or "Not disclosed"))
+                        skills_list = job.get("skills") or []
+                        if skills_list:
+                            st.write("**Skills:** " + ", ".join(skills_list))
+                            match_score, matched_skills = score_job(user["skills"], user["interests"], {"required_skills": ", ".join(skills_list)})
+                            st.caption("Profile skill match: " + str(match_score) + "% · Matched: " + (", ".join(matched_skills) if matched_skills else "No exact overlap yet"))
+                        st.write(job.get("summary") or "No short description provided.")
+                        dates = []
+                        if job.get("posted_date"):
+                            dates.append("Posted: " + job["posted_date"])
+                        if job.get("valid_through"):
+                            dates.append("Apply by: " + job["valid_through"])
+                        if dates:
+                            st.caption(" · ".join(dates))
+                    with right:
+                        if job.get("url"):
+                            st.link_button("View job", job["url"], use_container_width=True)
+                        if job.get("apply_url"):
+                            st.link_button("Apply", job["apply_url"], use_container_width=True)
+            st.caption("Listings are supplied by JobsForce India. Check the employer's posting and application page for the latest status before applying.")
+    else:
+        st.info("Enter a role or skill and select your filters, then choose Search live jobs.")
+    st.caption("Live job search is separate from sample-job recommendations, saved jobs and the application tracker. Existing CareerMatch features and records remain unchanged.")
 
 elif page == "Company Recommendations":
     st.title("Company Recommendations")
